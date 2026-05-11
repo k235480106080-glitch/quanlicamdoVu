@@ -187,8 +187,88 @@ SELECT * FROM TaiSan;
 
 <img width="2878" height="1797" alt="image" src="https://github.com/user-attachments/assets/8ff7071e-3eb8-48f6-b480-ccc9285e4005" />
 
+## Event 2: Tính toán công nợ thời gian thực
+- Đây là phần quan trọng nhất, xử lý "bộ não" của hệ thống để tính toán tiền lãi đơn và lãi kép dựa trên quy tắc: $5.000đ/1.000.000đ$ gốc mỗi ngày.
+- Trong SQL Server, cách tốt nhất để tái sử dụng logic này là viết một Scalar-Valued Function.
+### a. Ý tưởng thuật toán
+- Lãi suất hàng ngày ($r$): $5.000 / 1.000.000 = 0.005$ (0.5%/ngày).
+- Giai đoạn 1 (Lãi đơn): Từ ngày lập đến Deadline1.
+- Công thức: $Gốc + (Gốc \times r \times Số\ngày)$.
+- Giai đoạn 2 (Lãi kép): Từ sau Deadline1 đến ngày hiện tại. Phần lãi đơn tích lũy được sẽ nhập vào gốc.
+- Công thức: $Gốc\mới \times (1 + r)^{Sốngàyquáhạn}$.
+- Công nợ cuối cùng: Tổng tiền (Gốc + Lãi) trừ đi số tiền khách đã trả (lấy từ bảng GiaoDich).
+### b. Mã SQL: Hàm tính tổng nợ (fn_TinhTongNo)
+```SQL
+CREATE FUNCTION fn_TinhTongNo (@MaHD INT, @NgayTinh DATETIME)
+RETURNS MONEY
+AS
+BEGIN
+    DECLARE @NgayLap DATETIME, @GocBanDau MONEY, @Deadline1 DATETIME;
+    DECLARE @TongTienPhaiTra MONEY = 0;
+    DECLARE @LaiSuatDaily FLOAT = 0.005; -- 0.5% mỗi ngày
+    
+    -- 1. Lấy thông tin gốc của hợp đồng
+    SELECT 
+        @NgayLap = NgayLap, 
+        @GocBanDau = SoTienVayGoc, 
+        @Deadline1 = Deadline1
+    FROM HopDong WHERE MaHD = @MaHD;
+
+    -- 2. Tính toán tiền lãi theo các mốc thời gian
+    IF @NgayTinh <= @Deadline1
+    BEGIN
+        -- TRƯỜNG HỢP LÃI ĐƠN (Trong hạn)
+        DECLARE @SoNgayVay INT = DATEDIFF(DAY, @NgayLap, @NgayTinh);
+        IF @SoNgayVay < 0 SET @SoNgayVay = 0;
+        
+        SET @TongTienPhaiTra = @GocBanDau + (@GocBanDau * @LaiSuatDaily * @SoNgayVay);
+    END
+    ELSE
+    BEGIN
+        -- TRƯỜNG HỢP LÃI KÉP (Quá hạn Deadline1)
+        -- Bước A: Tính tổng tiền (gốc + lãi đơn) tại mốc Deadline1
+        DECLARE @SoNgayLaiDon INT = DATEDIFF(DAY, @NgayLap, @Deadline1);
+        DECLARE @GocNhapLai MONEY = @GocBanDau + (@GocBanDau * @LaiSuatDaily * @SoNgayLaiDon);
+        
+        -- Bước B: Tính lãi kép từ Deadline1 đến NgayTinh
+        DECLARE @SoNgayQuaHan INT = DATEDIFF(DAY, @Deadline1, @NgayTinh);
+        -- Công thức: A = P * (1 + r)^n
+        SET @TongTienPhaiTra = @GocNhapLai * POWER((1 + @LaiSuatDaily), @SoNgayQuaHan);
+    END
+
+    -- 3. Trừ đi tổng số tiền khách đã từng trả (Trả góp/Trả thẳng)
+    DECLARE @DaTra MONEY;
+    SELECT @DaTra = ISNULL(SUM(SoTienThu), 0) 
+    FROM GiaoDich 
+    WHERE MaHD = @MaHD AND NgayGD <= @NgayTinh;
+
+    RETURN @TongTienPhaiTra - @DaTra;
+END
+GO
+```
+
+<img width="2877" height="1793" alt="image" src="https://github.com/user-attachments/assets/98e53920-0679-42f2-b670-b18a8acf7231" />
 
 
+
+
+### c. Cách sử dụng để kiểm tra nợ của 3 khách hàng đã thêm
+
+```SQL
+-- Xem danh sách nợ hiện tại của tất cả hợp đồng
+SELECT 
+    h.MaHD, 
+    k.HoTen, 
+    h.SoTienVayGoc AS [Gốc gốc],
+    h.NgayLap,
+    h.Deadline1,
+    dbo.fn_TinhTongNo(h.MaHD, GETDATE()) AS [Tổng nợ hiện tại (Gốc + Lãi)],
+    dbo.fn_TinhTongNo(h.MaHD, '2026-12-31') AS [Nợ dự tính cuối năm 2026]
+FROM HopDong h
+JOIN KhachHang k ON h.MaKH = k.MaKH;
+```
+
+<img width="2879" height="1796" alt="image" src="https://github.com/user-attachments/assets/7ff0eac1-e6f3-44a5-a73f-265f4bdfae2f" />
 
 
 
